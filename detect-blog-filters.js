@@ -1,14 +1,17 @@
 /*
- * Detect blog: category filter + search + View More + category archive routing.
+ * Detect blog filters + category archive routing.
  *
- * Main /blog:
+ * /blog
  * - category tabs filter articles in-place;
- * - the bottom "View all" CTA points to the archive page of the currently selected category.
+ * - search works together with the filter;
+ * - View More reveals 12 more matching posts;
+ * - the separate View All CTA links to the currently selected category page.
  *
- * /category/<slug>:
- * - search and View More keep working;
- * - category tabs navigate between category archive pages;
- * - the active tab is detected from the current URL.
+ * /category/<slug>
+ * - ALL posts from that category are loaded and shown immediately;
+ * - no View More / View All controls are created;
+ * - search still works;
+ * - category tabs navigate to the corresponding category archive.
  */
 
 (() => {
@@ -26,9 +29,6 @@
     activeClass: "active",
     viewMoreLabel: "View More",
     noResultsText: "No articles found.",
-
-    // Best option: add data-blog-view-all to the intended CTA in Webflow.
-    // Fallback below also finds a "View all" link/button in the same section.
     viewAllSelector: "[data-blog-view-all], .blog-view-all"
   };
 
@@ -42,7 +42,6 @@
     "Product & Platform": "/category/product-platform"
   };
 
-  // Slug -> category, based on the supplied CSV plus the newer posts.
   const CATEGORY_BY_SLUG = {
     "2026-trends-for-drone-service-providers": "Drone Operations",
     "35-mules": "Newsroom",
@@ -85,8 +84,6 @@
     "why-utilities-struggle-with-ai-visual-inspection-platforms": "Asset Inspection & Management",
     "wooden-h-frame-transmission": "Case Studies",
     "the-new-detectos": "Product & Platform",
-
-    // Newer posts that are not present in the supplied CSV.
     "partner-network-any-pilot-any-drone": "Newsroom",
     "new-345kv-transmission-line": "Case Studies",
     "how-to-verify-ai-inspection-results": "Asset Inspection & Management",
@@ -106,17 +103,17 @@
   };
 
   const categoryUrl = (category) => {
-    const normalizedCategory = normalize(category);
-    const entry = Object.entries(CATEGORY_ROUTES)
-      .find(([label]) => normalize(label) === normalizedCategory);
-    return entry?.[1] || "/blog";
+    const wanted = normalize(category);
+    const match = Object.entries(CATEGORY_ROUTES)
+      .find(([label]) => normalize(label) === wanted);
+    return match?.[1] || "/blog";
   };
 
   const categoryFromPath = () => {
     const currentPath = cleanPath(window.location.pathname);
-    const entry = Object.entries(CATEGORY_ROUTES)
+    const match = Object.entries(CATEGORY_ROUTES)
       .find(([, route]) => cleanPath(route) === currentPath);
-    return entry?.[0] || null;
+    return match?.[0] || null;
   };
 
   const slugFromItem = (item) => {
@@ -126,14 +123,13 @@
 
   const init = async () => {
     const list = document.querySelector(CONFIG.list);
+    if (!list) return;
+
     const buttons = [...document.querySelectorAll(CONFIG.categoryButton)];
-    if (!list || !buttons.length) return;
-
+    const currentPath = cleanPath(window.location.pathname);
+    const isCategoryPage = currentPath.startsWith("/category/");
     const pageCategory = categoryFromPath();
-    const isCategoryPage = cleanPath(window.location.pathname).startsWith("/category/");
 
-    // Replacing the search input removes Finsweet's old input listener so both
-    // engines cannot fight over display styles. Search is optional on archive pages.
     const originalInput = document.querySelector(CONFIG.search);
     let searchInput = null;
 
@@ -153,7 +149,7 @@
         ?.getAttribute("data-attributes") ||
       CONFIG.allLabel;
 
-    let visibleLimit = CONFIG.pageSize;
+    let visibleLimit = isCategoryPage ? Infinity : CONFIG.pageSize;
     let query = "";
 
     const pagination = document.querySelector(CONFIG.pagination);
@@ -164,6 +160,9 @@
     let viewMore = null;
     let noResults = null;
     let viewAllControls = [];
+
+    const currentItems = () =>
+      [...list.querySelectorAll(":scope > .blog-item")];
 
     const setActiveButton = (category) => {
       const target = normalize(category);
@@ -178,28 +177,30 @@
     };
 
     const findViewAllControls = () => {
-      const explicit = [
-        ...document.querySelectorAll(CONFIG.viewAllSelector)
-      ].filter((element) => !element.matches(CONFIG.categoryButton));
+      if (isCategoryPage) return [];
+
+      const explicit = [...document.querySelectorAll(CONFIG.viewAllSelector)]
+        .filter((element) => !element.matches(CONFIG.categoryButton));
 
       if (explicit.length) return explicit;
 
-      // Fallback: find a "View all" CTA near the blog list, but never the filter tab.
       const section = list.closest("section") || list.parentElement || document;
-      const local = [...section.querySelectorAll("a, button")].filter((element) => {
-        return !element.matches(CONFIG.categoryButton) &&
-          normalize(element.textContent) === normalize(CONFIG.allLabel);
-      });
+      const local = [...section.querySelectorAll("a, button")].filter((element) =>
+        !element.matches(CONFIG.categoryButton) &&
+        normalize(element.textContent) === normalize(CONFIG.allLabel)
+      );
 
       if (local.length) return local;
 
-      return [...document.querySelectorAll("a, button")].filter((element) => {
-        return !element.matches(CONFIG.categoryButton) &&
-          normalize(element.textContent) === normalize(CONFIG.allLabel);
-      });
+      return [...document.querySelectorAll("a, button")].filter((element) =>
+        !element.matches(CONFIG.categoryButton) &&
+        normalize(element.textContent) === normalize(CONFIG.allLabel)
+      );
     };
 
     const syncViewAllControls = () => {
+      if (isCategoryPage) return;
+
       const targetUrl = categoryUrl(activeCategory);
 
       viewAllControls.forEach((control) => {
@@ -214,7 +215,9 @@
 
         if (control.tagName !== "A") {
           control.addEventListener("click", () => {
-            window.location.assign(control.dataset.detectViewAllUrl || targetUrl);
+            window.location.assign(
+              control.dataset.detectViewAllUrl || targetUrl
+            );
           });
         }
       });
@@ -222,17 +225,23 @@
 
     const ensureControls = () => {
       if (pagination) {
+        // Keep the native pagination URL for background loading, but remove its UI.
         pagination.innerHTML = "";
 
-        viewMore = document.createElement("button");
-        viewMore.type = "button";
-        viewMore.className =
-          "btn-nregular blue-type pagination-btn detect-view-more";
-        viewMore.textContent = CONFIG.viewMoreLabel;
-        pagination.appendChild(viewMore);
+        if (isCategoryPage) {
+          pagination.hidden = true;
+        } else {
+          viewMore = document.createElement("button");
+          viewMore.type = "button";
+          viewMore.className =
+            "btn-nregular blue-type pagination-btn detect-view-more";
+          viewMore.textContent = CONFIG.viewMoreLabel;
+          pagination.appendChild(viewMore);
+        }
       }
 
-      noResults = list.parentElement?.querySelector(":scope > .detect-blog-empty") || null;
+      noResults = list.parentElement
+        ?.querySelector(":scope > .detect-blog-empty") || null;
 
       if (!noResults) {
         noResults = document.createElement("p");
@@ -242,8 +251,10 @@
         list.insertAdjacentElement("afterend", noResults);
       }
 
-      viewAllControls = findViewAllControls();
-      syncViewAllControls();
+      if (!isCategoryPage) {
+        viewAllControls = findViewAllControls();
+        syncViewAllControls();
+      }
     };
 
     const assignCategory = (item) => {
@@ -252,19 +263,19 @@
       const embedded = item.querySelector("[data-blog-category]")
         ?.getAttribute("data-blog-category");
 
-      // On a category archive, every CMS item belongs to that archive by definition.
-      // This fallback keeps future/new posts working even before the hard-coded map
-      // is updated.
+      // A Webflow category archive already guarantees its items belong to that
+      // category. Using the URL here also makes newly published articles work
+      // without updating CATEGORY_BY_SLUG first.
       item.dataset.blogCategory =
-        mapped || embedded || pageCategory || "Uncategorized";
+        (isCategoryPage && pageCategory) ||
+        mapped ||
+        embedded ||
+        "Uncategorized";
 
       item.dataset.blogTitle = normalize(
         item.querySelector(CONFIG.title)?.textContent
       );
     };
-
-    const currentItems = () =>
-      [...list.querySelectorAll(":scope > .blog-item")];
 
     const applyFilters = () => {
       const normalizedCategory = normalize(activeCategory);
@@ -289,20 +300,24 @@
           matchingIndex += 1;
         }
 
-        item.hidden = !matches || matchingIndex > visibleLimit;
+        const overLimit =
+          !isCategoryPage && matchingIndex > visibleLimit;
+
+        item.hidden = !matches || overLimit;
         item.style.display = item.hidden ? "none" : "";
-        item.setAttribute(
-          "aria-hidden",
-          item.hidden ? "true" : "false"
-        );
+        item.setAttribute("aria-hidden", item.hidden ? "true" : "false");
       });
 
-      if (viewMore) {
+      if (!isCategoryPage && viewMore) {
         viewMore.hidden = matchingTotal <= visibleLimit;
       }
 
-      if (pagination) {
+      if (!isCategoryPage && pagination) {
         pagination.hidden = matchingTotal <= visibleLimit;
+      }
+
+      if (isCategoryPage && pagination) {
+        pagination.hidden = true;
       }
 
       if (noResults) {
@@ -311,7 +326,7 @@
     };
 
     const resetLimitAndFilter = () => {
-      visibleLimit = CONFIG.pageSize;
+      visibleLimit = isCategoryPage ? Infinity : CONFIG.pageSize;
       applyFilters();
     };
 
@@ -327,18 +342,16 @@
         const nextCategory =
           button.getAttribute("data-attributes") || CONFIG.allLabel;
 
-        // On category archive pages the category tabs are navigation.
-        // This is intentional: the CMS archive only contains that category's items.
         if (isCategoryPage) {
           const targetUrl = categoryUrl(nextCategory);
 
-          if (cleanPath(targetUrl) !== cleanPath(window.location.pathname)) {
+          if (cleanPath(targetUrl) !== currentPath) {
             window.location.assign(targetUrl);
-            return;
           }
+
+          return;
         }
 
-        // On /blog the tabs stay instant client-side filters.
         activeCategory = nextCategory;
         setActiveButton(activeCategory);
         resetLimitAndFilter();
@@ -373,14 +386,17 @@
 
     applyFilters();
 
-    // Load every remaining native Webflow CMS pagination page into one list.
+    // Pull every remaining Webflow CMS pagination page into the current list.
+    // On /blog they stay hidden behind View More.
+    // On /category/* they are shown immediately after loading.
     const seenPages = new Set();
     const seenSlugs = new Set(currentItems().map(slugFromItem));
+
     let nextUrl = initialNext
       ? new URL(initialNext, window.location.href).href
       : "";
 
-    if (viewMore && nextUrl) {
+    if (!isCategoryPage && viewMore && nextUrl) {
       viewMore.disabled = true;
       viewMore.textContent = "Loading...";
       pagination.hidden = false;
@@ -424,9 +440,13 @@
     } catch (error) {
       console.error("Detect blog filters:", error);
     } finally {
-      if (viewMore) {
+      if (!isCategoryPage && viewMore) {
         viewMore.disabled = false;
         viewMore.textContent = CONFIG.viewMoreLabel;
+      }
+
+      if (isCategoryPage) {
+        visibleLimit = Infinity;
       }
 
       applyFilters();
