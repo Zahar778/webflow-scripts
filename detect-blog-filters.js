@@ -5,13 +5,13 @@
  * - category tabs filter articles in-place;
  * - search works together with the filter;
  * - View More reveals 12 more matching posts;
- * - the separate View All CTA links to the currently selected category page.
+ * - the separate View All CTA links to the archive of the currently selected filter.
  *
  * /category/<slug>
- * - ALL posts from that category are loaded and shown immediately;
- * - no View More / View All controls are created;
+ * - ALL posts from that archive are loaded and shown immediately;
+ * - no View More / separate View All CTA is created;
  * - search still works;
- * - category tabs navigate to the corresponding category archive.
+ * - category tabs act as links between /category/* pages.
  */
 
 (() => {
@@ -33,7 +33,7 @@
   };
 
   const CATEGORY_ROUTES = {
-    "View all": "/blog",
+    "View all": "/category/view-all",
     "Asset Inspection & Management": "/category/asset-inspection-management",
     "Grid Reliability": "/category/grid-reliability",
     "Drone Operations": "/category/drone-operations",
@@ -106,7 +106,7 @@
     const wanted = normalize(category);
     const match = Object.entries(CATEGORY_ROUTES)
       .find(([label]) => normalize(label) === wanted);
-    return match?.[1] || "/blog";
+    return match?.[1] || CATEGORY_ROUTES[CONFIG.allLabel];
   };
 
   const categoryFromPath = () => {
@@ -225,7 +225,6 @@
 
     const ensureControls = () => {
       if (pagination) {
-        // Keep the native pagination URL for background loading, but remove its UI.
         pagination.innerHTML = "";
 
         if (isCategoryPage) {
@@ -263,9 +262,6 @@
       const embedded = item.querySelector("[data-blog-category]")
         ?.getAttribute("data-blog-category");
 
-      // A Webflow category archive already guarantees its items belong to that
-      // category. Using the URL here also makes newly published articles work
-      // without updating CATEGORY_BY_SLUG first.
       item.dataset.blogCategory =
         (isCategoryPage && pageCategory) ||
         mapped ||
@@ -386,9 +382,6 @@
 
     applyFilters();
 
-    // Pull every remaining Webflow CMS pagination page into the current list.
-    // On /blog they stay hidden behind View More.
-    // On /category/* they are shown immediately after loading.
     const seenPages = new Set();
     const seenSlugs = new Set(currentItems().map(slugFromItem));
 
