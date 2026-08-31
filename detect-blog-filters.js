@@ -1,4 +1,4 @@
-/* Detect blog filters + category routing */
+/* Detect blog filters + category-page filtering */
 (() => {
   "use strict";
 
@@ -16,6 +16,10 @@
     viewAllSelector: "[data-blog-view-all='true'], [data-blog-view-all], .blog-view-all"
   };
 
+  // Used only for:
+  // 1) determining the active category from /category/<slug>
+  // 2) setting the separate View All CTA URL on /blog
+  // The script DOES NOT change category-tab hrefs on /category/* pages.
   const CATEGORY_ROUTES = {
     "View all": "/category/view-all",
     "Asset Inspection & Management": "/category/asset-inspection-management",
@@ -127,42 +131,13 @@
         ?.getAttribute("data-attributes") ||
       CONFIG.allLabel;
 
-    /* ---------------------------------------------------------
-       CATEGORY NAVIGATION — DOES NOT DEPEND ON CMS LIST EXISTING
-    --------------------------------------------------------- */
+    // On category pages we ONLY highlight the current category.
+    // Existing hrefs/links added in Webflow are left completely untouched.
     if (isCategoryPage) {
-      setActiveButton(buttons, pageCategory || CONFIG.allLabel);
-
-      buttons.forEach((button) => {
-        const label = button.getAttribute("data-attributes") || CONFIG.allLabel;
-        const href = categoryUrl(label);
-
-        // If the tab itself is an anchor, make it a real link.
-        if (button.tagName === "A") {
-          button.setAttribute("href", href);
-        } else {
-          button.style.cursor = "pointer";
-          button.setAttribute("role", "link");
-          button.setAttribute("tabindex", "0");
-
-          const go = () => {
-            if (cleanPath(href) !== currentPath) window.location.assign(href);
-          };
-
-          button.addEventListener("click", go);
-          button.addEventListener("keydown", (event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              go();
-            }
-          });
-        }
-      });
+      setActiveButton(buttons, activeCategory);
     }
 
-    /* ---------------------------------------------------------
-       BLOG VIEW ALL CTA — ALSO DOES NOT DEPEND ON CMS LIST
-    --------------------------------------------------------- */
+    // Separate View All CTA exists only on /blog and follows the selected filter.
     const viewAllControls = isBlogPage
       ? [...document.querySelectorAll(CONFIG.viewAllSelector)]
       : [];
@@ -188,12 +163,13 @@
 
     syncViewAll();
 
-    /* ---------------------------------------------------------
-       CMS / SEARCH / IN-PAGE FILTERING
-       If the list is missing, navigation above still works.
-    --------------------------------------------------------- */
     const list = document.querySelector(CONFIG.list);
     if (!list) return;
+
+    // Disable old Finsweet filtering hooks so they cannot fight this script.
+    document.querySelector("[fs-cmsfilter-element='filters']")
+      ?.removeAttribute("fs-cmsfilter-element");
+    list.removeAttribute("fs-cmsfilter-element");
 
     const originalInput = document.querySelector(CONFIG.search);
     let searchInput = null;
@@ -202,10 +178,6 @@
       searchInput = originalInput.cloneNode(true);
       originalInput.replaceWith(searchInput);
       searchInput.removeAttribute("fs-cmsfilter-field");
-
-      document.querySelector("[fs-cmsfilter-element='filters']")
-        ?.removeAttribute("fs-cmsfilter-element");
-      list.removeAttribute("fs-cmsfilter-element");
     }
 
     const pagination = document.querySelector(CONFIG.pagination);
@@ -213,7 +185,6 @@
     const nativePrevious = pagination?.querySelector(".w-pagination-previous");
     const initialNext = nativeNext?.getAttribute("href") || "";
 
-    // Never wipe the whole pagination wrapper: the customer's View All CTA may live there.
     nativeNext?.setAttribute("hidden", "hidden");
     nativePrevious?.setAttribute("hidden", "hidden");
 
@@ -255,7 +226,9 @@
       const embedded = item.querySelector("[data-blog-category]")
         ?.getAttribute("data-blog-category");
 
-      item.dataset.blogCategory = mapped || embedded || pageCategory || "Uncategorized";
+      // Do NOT fall back to the current page category here.
+      // Every article must prove its own category via the map or data attribute.
+      item.dataset.blogCategory = mapped || embedded || "Uncategorized";
       item.dataset.blogTitle = normalize(item.querySelector(CONFIG.title)?.textContent);
     };
 
@@ -266,10 +239,8 @@
       let matchTotal = 0;
 
       currentItems().forEach((item) => {
-        // Category archives are already pre-filtered by Webflow.
-        const categoryMatch = isCategoryPage
-          ? true
-          : allSelected || normalize(item.dataset.blogCategory) === normalizedCategory;
+        const categoryMatch =
+          allSelected || normalize(item.dataset.blogCategory) === normalizedCategory;
 
         const searchMatch = !query || item.dataset.blogTitle.includes(query);
         const matches = categoryMatch && searchMatch;
@@ -291,6 +262,8 @@
 
     currentItems().forEach(assignCategory);
 
+    // Only /blog tabs are JS filters.
+    // On /category/* your manually-added links are left alone.
     if (isBlogPage) {
       setActiveButton(buttons, activeCategory);
 
@@ -323,7 +296,10 @@
         if (isBlogPage) visibleLimit = CONFIG.pageSize;
         apply();
       });
-      searchInput.closest("form")?.addEventListener("submit", (event) => event.preventDefault());
+
+      searchInput.closest("form")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+      });
     }
 
     viewMore?.addEventListener("click", () => {
@@ -333,9 +309,8 @@
 
     apply();
 
-    /* ---------------------------------------------------------
-       LOAD ALL NATIVE WEBFLOW PAGINATION PAGES IN BACKGROUND
-    --------------------------------------------------------- */
+    // Load every remaining native Webflow CMS pagination page in the background.
+    // /blog keeps them behind View More; /category/* shows all matching items immediately.
     const seenPages = new Set();
     const seenSlugs = new Set(currentItems().map(slugFromItem));
     let nextUrl = initialNext ? new URL(initialNext, window.location.href).href : "";
