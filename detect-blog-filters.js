@@ -1,7 +1,14 @@
 /*
- * Detect blog: combined category filter + title search + View More.
- * Paste the whole file into Webflow Page settings -> Before </body> tag,
- * wrapped in <script>...</script>, or use the ready-to-paste HTML file.
+ * Detect blog: category filter + search + View More + category archive routing.
+ *
+ * Main /blog:
+ * - category tabs filter articles in-place;
+ * - the bottom "View all" CTA points to the archive page of the currently selected category.
+ *
+ * /category/<slug>:
+ * - search and View More keep working;
+ * - category tabs navigate between category archive pages;
+ * - the active tab is detected from the current URL.
  */
 
 (() => {
@@ -18,10 +25,24 @@
     allLabel: "View all",
     activeClass: "active",
     viewMoreLabel: "View More",
-    noResultsText: "No articles found."
+    noResultsText: "No articles found.",
+
+    // Best option: add data-blog-view-all to the intended CTA in Webflow.
+    // Fallback below also finds a "View all" link/button in the same section.
+    viewAllSelector: "[data-blog-view-all], .blog-view-all"
   };
 
-  // Slug -> category, based on the supplied CSV plus the five newer posts.
+  const CATEGORY_ROUTES = {
+    "View all": "/blog",
+    "Asset Inspection & Management": "/category/asset-inspection-management",
+    "Grid Reliability": "/category/grid-reliability",
+    "Drone Operations": "/category/drone-operations",
+    "Case Studies": "/category/case-studies",
+    "Newsroom": "/category/newsroom",
+    "Product & Platform": "/category/product-platform"
+  };
+
+  // Slug -> category, based on the supplied CSV plus the newer posts.
   const CATEGORY_BY_SLUG = {
     "2026-trends-for-drone-service-providers": "Drone Operations",
     "35-mules": "Newsroom",
@@ -79,6 +100,25 @@
     .replace(/\s+/g, " ")
     .trim();
 
+  const cleanPath = (value) => {
+    const path = (value || "/").split("?")[0].replace(/\/+$/, "");
+    return path || "/";
+  };
+
+  const categoryUrl = (category) => {
+    const normalizedCategory = normalize(category);
+    const entry = Object.entries(CATEGORY_ROUTES)
+      .find(([label]) => normalize(label) === normalizedCategory);
+    return entry?.[1] || "/blog";
+  };
+
+  const categoryFromPath = () => {
+    const currentPath = cleanPath(window.location.pathname);
+    const entry = Object.entries(CATEGORY_ROUTES)
+      .find(([, route]) => cleanPath(route) === currentPath);
+    return entry?.[0] || null;
+  };
+
   const slugFromItem = (item) => {
     const href = item.querySelector("a[href*='/blog/']")?.getAttribute("href") || "";
     return href.split("?")[0].replace(/\/$/, "").split("/").pop() || "";
@@ -86,22 +126,33 @@
 
   const init = async () => {
     const list = document.querySelector(CONFIG.list);
-    const originalInput = document.querySelector(CONFIG.search);
     const buttons = [...document.querySelectorAll(CONFIG.categoryButton)];
-    if (!list || !originalInput || !buttons.length) return;
+    if (!list || !buttons.length) return;
 
-    // Replacing the input removes Finsweet's old input listener so both engines
-    // cannot fight over display styles. This script then preserves the same search UI.
-    const searchInput = originalInput.cloneNode(true);
-    originalInput.replaceWith(searchInput);
-    searchInput.removeAttribute("fs-cmsfilter-field");
-    document.querySelector("[fs-cmsfilter-element='filters']")
-      ?.removeAttribute("fs-cmsfilter-element");
-    list.removeAttribute("fs-cmsfilter-element");
+    const pageCategory = categoryFromPath();
+    const isCategoryPage = cleanPath(window.location.pathname).startsWith("/category/");
+
+    // Replacing the search input removes Finsweet's old input listener so both
+    // engines cannot fight over display styles. Search is optional on archive pages.
+    const originalInput = document.querySelector(CONFIG.search);
+    let searchInput = null;
+
+    if (originalInput) {
+      searchInput = originalInput.cloneNode(true);
+      originalInput.replaceWith(searchInput);
+      searchInput.removeAttribute("fs-cmsfilter-field");
+
+      document.querySelector("[fs-cmsfilter-element='filters']")
+        ?.removeAttribute("fs-cmsfilter-element");
+      list.removeAttribute("fs-cmsfilter-element");
+    }
 
     let activeCategory =
+      pageCategory ||
       buttons.find((button) => button.classList.contains(CONFIG.activeClass))
-        ?.getAttribute("data-attributes") || CONFIG.allLabel;
+        ?.getAttribute("data-attributes") ||
+      CONFIG.allLabel;
+
     let visibleLimit = CONFIG.pageSize;
     let query = "";
 
@@ -112,22 +163,87 @@
 
     let viewMore = null;
     let noResults = null;
+    let viewAllControls = [];
+
+    const setActiveButton = (category) => {
+      const target = normalize(category);
+
+      buttons.forEach((button) => {
+        const selected =
+          normalize(button.getAttribute("data-attributes")) === target;
+
+        button.classList.toggle(CONFIG.activeClass, selected);
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+    };
+
+    const findViewAllControls = () => {
+      const explicit = [
+        ...document.querySelectorAll(CONFIG.viewAllSelector)
+      ].filter((element) => !element.matches(CONFIG.categoryButton));
+
+      if (explicit.length) return explicit;
+
+      // Fallback: find a "View all" CTA near the blog list, but never the filter tab.
+      const section = list.closest("section") || list.parentElement || document;
+      const local = [...section.querySelectorAll("a, button")].filter((element) => {
+        return !element.matches(CONFIG.categoryButton) &&
+          normalize(element.textContent) === normalize(CONFIG.allLabel);
+      });
+
+      if (local.length) return local;
+
+      return [...document.querySelectorAll("a, button")].filter((element) => {
+        return !element.matches(CONFIG.categoryButton) &&
+          normalize(element.textContent) === normalize(CONFIG.allLabel);
+      });
+    };
+
+    const syncViewAllControls = () => {
+      const targetUrl = categoryUrl(activeCategory);
+
+      viewAllControls.forEach((control) => {
+        if (control.tagName === "A") {
+          control.setAttribute("href", targetUrl);
+        } else {
+          control.dataset.detectViewAllUrl = targetUrl;
+        }
+
+        if (control.dataset.detectViewAllBound === "true") return;
+        control.dataset.detectViewAllBound = "true";
+
+        if (control.tagName !== "A") {
+          control.addEventListener("click", () => {
+            window.location.assign(control.dataset.detectViewAllUrl || targetUrl);
+          });
+        }
+      });
+    };
 
     const ensureControls = () => {
       if (pagination) {
         pagination.innerHTML = "";
+
         viewMore = document.createElement("button");
         viewMore.type = "button";
-        viewMore.className = "btn-nregular blue-type pagination-btn detect-view-more";
+        viewMore.className =
+          "btn-nregular blue-type pagination-btn detect-view-more";
         viewMore.textContent = CONFIG.viewMoreLabel;
         pagination.appendChild(viewMore);
       }
 
-      noResults = document.createElement("p");
-      noResults.className = "detect-blog-empty";
-      noResults.textContent = CONFIG.noResultsText;
-      noResults.hidden = true;
-      list.insertAdjacentElement("afterend", noResults);
+      noResults = list.parentElement?.querySelector(":scope > .detect-blog-empty") || null;
+
+      if (!noResults) {
+        noResults = document.createElement("p");
+        noResults.className = "detect-blog-empty";
+        noResults.textContent = CONFIG.noResultsText;
+        noResults.hidden = true;
+        list.insertAdjacentElement("afterend", noResults);
+      }
+
+      viewAllControls = findViewAllControls();
+      syncViewAllControls();
     };
 
     const assignCategory = (item) => {
@@ -135,24 +251,37 @@
       const mapped = CATEGORY_BY_SLUG[slug];
       const embedded = item.querySelector("[data-blog-category]")
         ?.getAttribute("data-blog-category");
-      item.dataset.blogCategory = mapped || embedded || "Uncategorized";
+
+      // On a category archive, every CMS item belongs to that archive by definition.
+      // This fallback keeps future/new posts working even before the hard-coded map
+      // is updated.
+      item.dataset.blogCategory =
+        mapped || embedded || pageCategory || "Uncategorized";
+
       item.dataset.blogTitle = normalize(
         item.querySelector(CONFIG.title)?.textContent
       );
     };
 
-    const currentItems = () => [...list.querySelectorAll(":scope > .blog-item")];
+    const currentItems = () =>
+      [...list.querySelectorAll(":scope > .blog-item")];
 
     const applyFilters = () => {
       const normalizedCategory = normalize(activeCategory);
-      const allSelected = normalizedCategory === normalize(CONFIG.allLabel);
+      const allSelected =
+        normalizedCategory === normalize(CONFIG.allLabel);
+
       let matchingIndex = 0;
       let matchingTotal = 0;
 
       currentItems().forEach((item) => {
-        const categoryMatch = allSelected ||
+        const categoryMatch =
+          allSelected ||
           normalize(item.dataset.blogCategory) === normalizedCategory;
-        const searchMatch = !query || item.dataset.blogTitle.includes(query);
+
+        const searchMatch =
+          !query || item.dataset.blogTitle.includes(query);
+
         const matches = categoryMatch && searchMatch;
 
         if (matches) {
@@ -162,15 +291,20 @@
 
         item.hidden = !matches || matchingIndex > visibleLimit;
         item.style.display = item.hidden ? "none" : "";
-        item.setAttribute("aria-hidden", item.hidden ? "true" : "false");
+        item.setAttribute(
+          "aria-hidden",
+          item.hidden ? "true" : "false"
+        );
       });
 
       if (viewMore) {
         viewMore.hidden = matchingTotal <= visibleLimit;
       }
+
       if (pagination) {
         pagination.hidden = matchingTotal <= visibleLimit;
       }
+
       if (noResults) {
         noResults.hidden = matchingTotal !== 0;
       }
@@ -183,22 +317,36 @@
 
     ensureControls();
     currentItems().forEach(assignCategory);
+    setActiveButton(activeCategory);
 
     buttons.forEach((button) => {
       button.setAttribute("role", "button");
       button.setAttribute("tabindex", "0");
 
       const selectCategory = () => {
-        activeCategory = button.getAttribute("data-attributes") || CONFIG.allLabel;
-        buttons.forEach((candidate) => {
-          const selected = candidate === button;
-          candidate.classList.toggle(CONFIG.activeClass, selected);
-          candidate.setAttribute("aria-pressed", selected ? "true" : "false");
-        });
+        const nextCategory =
+          button.getAttribute("data-attributes") || CONFIG.allLabel;
+
+        // On category archive pages the category tabs are navigation.
+        // This is intentional: the CMS archive only contains that category's items.
+        if (isCategoryPage) {
+          const targetUrl = categoryUrl(nextCategory);
+
+          if (cleanPath(targetUrl) !== cleanPath(window.location.pathname)) {
+            window.location.assign(targetUrl);
+            return;
+          }
+        }
+
+        // On /blog the tabs stay instant client-side filters.
+        activeCategory = nextCategory;
+        setActiveButton(activeCategory);
         resetLimitAndFilter();
+        syncViewAllControls();
       };
 
       button.addEventListener("click", selectCategory);
+
       button.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -207,14 +355,16 @@
       });
     });
 
-    searchInput.addEventListener("input", () => {
-      query = normalize(searchInput.value);
-      resetLimitAndFilter();
-    });
+    if (searchInput) {
+      searchInput.addEventListener("input", () => {
+        query = normalize(searchInput.value);
+        resetLimitAndFilter();
+      });
 
-    searchInput.closest("form")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-    });
+      searchInput.closest("form")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+      });
+    }
 
     viewMore?.addEventListener("click", () => {
       visibleLimit += CONFIG.pageSize;
@@ -226,7 +376,9 @@
     // Load every remaining native Webflow CMS pagination page into one list.
     const seenPages = new Set();
     const seenSlugs = new Set(currentItems().map(slugFromItem));
-    let nextUrl = initialNext ? new URL(initialNext, window.location.href).href : "";
+    let nextUrl = initialNext
+      ? new URL(initialNext, window.location.href).href
+      : "";
 
     if (viewMore && nextUrl) {
       viewMore.disabled = true;
@@ -237,24 +389,37 @@
     try {
       while (nextUrl && !seenPages.has(nextUrl)) {
         seenPages.add(nextUrl);
-        const response = await fetch(nextUrl, { credentials: "same-origin" });
-        if (!response.ok) throw new Error(`CMS page failed: ${response.status}`);
+
+        const response = await fetch(nextUrl, {
+          credentials: "same-origin"
+        });
+
+        if (!response.ok) {
+          throw new Error(`CMS page failed: ${response.status}`);
+        }
 
         const html = await response.text();
         const doc = new DOMParser().parseFromString(html, "text/html");
 
         [...doc.querySelectorAll(CONFIG.item)].forEach((sourceItem) => {
           const slug = slugFromItem(sourceItem);
+
           if (!slug || seenSlugs.has(slug)) return;
+
           seenSlugs.add(slug);
+
           const item = document.importNode(sourceItem, true);
           assignCategory(item);
           list.appendChild(item);
         });
 
-        const rawNext = doc.querySelector(`${CONFIG.pagination} .w-pagination-next`)
+        const rawNext = doc
+          .querySelector(`${CONFIG.pagination} .w-pagination-next`)
           ?.getAttribute("href");
-        nextUrl = rawNext ? new URL(rawNext, window.location.href).href : "";
+
+        nextUrl = rawNext
+          ? new URL(rawNext, window.location.href).href
+          : "";
       }
     } catch (error) {
       console.error("Detect blog filters:", error);
@@ -263,7 +428,9 @@
         viewMore.disabled = false;
         viewMore.textContent = CONFIG.viewMoreLabel;
       }
+
       applyFilters();
+      syncViewAllControls();
     }
   };
 
