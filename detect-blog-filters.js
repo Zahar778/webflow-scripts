@@ -1,19 +1,4 @@
-/*
- * Detect blog filters + category archive routing.
- *
- * /blog
- * - category tabs filter articles in-place;
- * - search works together with the filter;
- * - View More reveals 12 more matching posts;
- * - the separate View All CTA links to the archive of the currently selected filter.
- *
- * /category/<slug>
- * - ALL posts from that archive are loaded and shown immediately;
- * - no View More / separate View All CTA is created;
- * - search still works;
- * - category tabs act as links between /category/* pages.
- */
-
+/* Detect blog filters + category routing */
 (() => {
   "use strict";
 
@@ -27,9 +12,8 @@
     pageSize: 12,
     allLabel: "View all",
     activeClass: "active",
-    viewMoreLabel: "View More",
     noResultsText: "No articles found.",
-    viewAllSelector: "[data-blog-view-all], .blog-view-all"
+    viewAllSelector: "[data-blog-view-all='true'], [data-blog-view-all], .blog-view-all"
   };
 
   const CATEGORY_ROUTES = {
@@ -102,18 +86,18 @@
     return path || "/";
   };
 
-  const categoryUrl = (category) => {
-    const wanted = normalize(category);
-    const match = Object.entries(CATEGORY_ROUTES)
-      .find(([label]) => normalize(label) === wanted);
-    return match?.[1] || CATEGORY_ROUTES[CONFIG.allLabel];
+  const categoryUrl = (label) => {
+    const target = normalize(label);
+    const pair = Object.entries(CATEGORY_ROUTES)
+      .find(([name]) => normalize(name) === target);
+    return pair?.[1] || CATEGORY_ROUTES[CONFIG.allLabel];
   };
 
   const categoryFromPath = () => {
-    const currentPath = cleanPath(window.location.pathname);
-    const match = Object.entries(CATEGORY_ROUTES)
-      .find(([, route]) => cleanPath(route) === currentPath);
-    return match?.[0] || null;
+    const current = cleanPath(window.location.pathname);
+    const pair = Object.entries(CATEGORY_ROUTES)
+      .find(([, route]) => cleanPath(route) === current);
+    return pair?.[0] || null;
   };
 
   const slugFromItem = (item) => {
@@ -121,14 +105,95 @@
     return href.split("?")[0].replace(/\/$/, "").split("/").pop() || "";
   };
 
+  const setActiveButton = (buttons, category) => {
+    const target = normalize(category);
+    buttons.forEach((button) => {
+      const selected = normalize(button.getAttribute("data-attributes")) === target;
+      button.classList.toggle(CONFIG.activeClass, selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  };
+
   const init = async () => {
+    const currentPath = cleanPath(window.location.pathname);
+    const isBlogPage = currentPath === "/blog";
+    const isCategoryPage = currentPath.startsWith("/category/");
+    const buttons = [...document.querySelectorAll(CONFIG.categoryButton)];
+    const pageCategory = categoryFromPath();
+
+    let activeCategory =
+      pageCategory ||
+      buttons.find((button) => button.classList.contains(CONFIG.activeClass))
+        ?.getAttribute("data-attributes") ||
+      CONFIG.allLabel;
+
+    /* ---------------------------------------------------------
+       CATEGORY NAVIGATION — DOES NOT DEPEND ON CMS LIST EXISTING
+    --------------------------------------------------------- */
+    if (isCategoryPage) {
+      setActiveButton(buttons, pageCategory || CONFIG.allLabel);
+
+      buttons.forEach((button) => {
+        const label = button.getAttribute("data-attributes") || CONFIG.allLabel;
+        const href = categoryUrl(label);
+
+        // If the tab itself is an anchor, make it a real link.
+        if (button.tagName === "A") {
+          button.setAttribute("href", href);
+        } else {
+          button.style.cursor = "pointer";
+          button.setAttribute("role", "link");
+          button.setAttribute("tabindex", "0");
+
+          const go = () => {
+            if (cleanPath(href) !== currentPath) window.location.assign(href);
+          };
+
+          button.addEventListener("click", go);
+          button.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              go();
+            }
+          });
+        }
+      });
+    }
+
+    /* ---------------------------------------------------------
+       BLOG VIEW ALL CTA — ALSO DOES NOT DEPEND ON CMS LIST
+    --------------------------------------------------------- */
+    const viewAllControls = isBlogPage
+      ? [...document.querySelectorAll(CONFIG.viewAllSelector)]
+      : [];
+
+    const syncViewAll = () => {
+      if (!isBlogPage) return;
+      const href = categoryUrl(activeCategory);
+
+      viewAllControls.forEach((control) => {
+        if (control.tagName === "A") {
+          control.setAttribute("href", href);
+        } else {
+          control.dataset.detectViewAllUrl = href;
+          if (control.dataset.detectViewAllBound !== "true") {
+            control.dataset.detectViewAllBound = "true";
+            control.addEventListener("click", () => {
+              window.location.assign(control.dataset.detectViewAllUrl || href);
+            });
+          }
+        }
+      });
+    };
+
+    syncViewAll();
+
+    /* ---------------------------------------------------------
+       CMS / SEARCH / IN-PAGE FILTERING
+       If the list is missing, navigation above still works.
+    --------------------------------------------------------- */
     const list = document.querySelector(CONFIG.list);
     if (!list) return;
-
-    const buttons = [...document.querySelectorAll(CONFIG.categoryButton)];
-    const currentPath = cleanPath(window.location.pathname);
-    const isCategoryPage = currentPath.startsWith("/category/");
-    const pageCategory = categoryFromPath();
 
     const originalInput = document.querySelector(CONFIG.search);
     let searchInput = null;
@@ -143,118 +208,46 @@
       list.removeAttribute("fs-cmsfilter-element");
     }
 
-    let activeCategory =
-      pageCategory ||
-      buttons.find((button) => button.classList.contains(CONFIG.activeClass))
-        ?.getAttribute("data-attributes") ||
-      CONFIG.allLabel;
+    const pagination = document.querySelector(CONFIG.pagination);
+    const nativeNext = pagination?.querySelector(".w-pagination-next");
+    const nativePrevious = pagination?.querySelector(".w-pagination-previous");
+    const initialNext = nativeNext?.getAttribute("href") || "";
+
+    // Never wipe the whole pagination wrapper: the customer's View All CTA may live there.
+    nativeNext?.setAttribute("hidden", "hidden");
+    nativePrevious?.setAttribute("hidden", "hidden");
 
     let visibleLimit = isCategoryPage ? Infinity : CONFIG.pageSize;
     let query = "";
+    let noResults = list.parentElement?.querySelector(":scope > .detect-blog-empty") || null;
 
-    const pagination = document.querySelector(CONFIG.pagination);
-    const initialNext = pagination
-      ?.querySelector(".w-pagination-next")
-      ?.getAttribute("href");
+    if (!noResults) {
+      noResults = document.createElement("p");
+      noResults.className = "detect-blog-empty";
+      noResults.textContent = CONFIG.noResultsText;
+      noResults.hidden = true;
+      list.insertAdjacentElement("afterend", noResults);
+    }
 
     let viewMore = null;
-    let noResults = null;
-    let viewAllControls = [];
+    if (isBlogPage && pagination) {
+      viewMore = pagination.querySelector(".detect-view-more");
+      if (!viewMore) {
+        viewMore = document.createElement("button");
+        viewMore.type = "button";
+        viewMore.className = "btn-nregular blue-type pagination-btn detect-view-more";
+        viewMore.textContent = "View More";
 
-    const currentItems = () =>
-      [...list.querySelectorAll(":scope > .blog-item")];
-
-    const setActiveButton = (category) => {
-      const target = normalize(category);
-
-      buttons.forEach((button) => {
-        const selected =
-          normalize(button.getAttribute("data-attributes")) === target;
-
-        button.classList.toggle(CONFIG.activeClass, selected);
-        button.setAttribute("aria-pressed", selected ? "true" : "false");
-      });
-    };
-
-    const findViewAllControls = () => {
-      if (isCategoryPage) return [];
-
-      const explicit = [...document.querySelectorAll(CONFIG.viewAllSelector)]
-        .filter((element) => !element.matches(CONFIG.categoryButton));
-
-      if (explicit.length) return explicit;
-
-      const section = list.closest("section") || list.parentElement || document;
-      const local = [...section.querySelectorAll("a, button")].filter((element) =>
-        !element.matches(CONFIG.categoryButton) &&
-        normalize(element.textContent) === normalize(CONFIG.allLabel)
-      );
-
-      if (local.length) return local;
-
-      return [...document.querySelectorAll("a, button")].filter((element) =>
-        !element.matches(CONFIG.categoryButton) &&
-        normalize(element.textContent) === normalize(CONFIG.allLabel)
-      );
-    };
-
-    const syncViewAllControls = () => {
-      if (isCategoryPage) return;
-
-      const targetUrl = categoryUrl(activeCategory);
-
-      viewAllControls.forEach((control) => {
-        if (control.tagName === "A") {
-          control.setAttribute("href", targetUrl);
+        const viewAllInsidePagination = pagination.querySelector(CONFIG.viewAllSelector);
+        if (viewAllInsidePagination) {
+          pagination.insertBefore(viewMore, viewAllInsidePagination);
         } else {
-          control.dataset.detectViewAllUrl = targetUrl;
-        }
-
-        if (control.dataset.detectViewAllBound === "true") return;
-        control.dataset.detectViewAllBound = "true";
-
-        if (control.tagName !== "A") {
-          control.addEventListener("click", () => {
-            window.location.assign(
-              control.dataset.detectViewAllUrl || targetUrl
-            );
-          });
-        }
-      });
-    };
-
-    const ensureControls = () => {
-      if (pagination) {
-        pagination.innerHTML = "";
-
-        if (isCategoryPage) {
-          pagination.hidden = true;
-        } else {
-          viewMore = document.createElement("button");
-          viewMore.type = "button";
-          viewMore.className =
-            "btn-nregular blue-type pagination-btn detect-view-more";
-          viewMore.textContent = CONFIG.viewMoreLabel;
           pagination.appendChild(viewMore);
         }
       }
+    }
 
-      noResults = list.parentElement
-        ?.querySelector(":scope > .detect-blog-empty") || null;
-
-      if (!noResults) {
-        noResults = document.createElement("p");
-        noResults.className = "detect-blog-empty";
-        noResults.textContent = CONFIG.noResultsText;
-        noResults.hidden = true;
-        list.insertAdjacentElement("afterend", noResults);
-      }
-
-      if (!isCategoryPage) {
-        viewAllControls = findViewAllControls();
-        syncViewAllControls();
-      }
-    };
+    const currentItems = () => [...list.querySelectorAll(":scope > .blog-item")];
 
     const assignCategory = (item) => {
       const slug = slugFromItem(item);
@@ -262,188 +255,121 @@
       const embedded = item.querySelector("[data-blog-category]")
         ?.getAttribute("data-blog-category");
 
-      item.dataset.blogCategory =
-        (isCategoryPage && pageCategory) ||
-        mapped ||
-        embedded ||
-        "Uncategorized";
-
-      item.dataset.blogTitle = normalize(
-        item.querySelector(CONFIG.title)?.textContent
-      );
+      item.dataset.blogCategory = mapped || embedded || pageCategory || "Uncategorized";
+      item.dataset.blogTitle = normalize(item.querySelector(CONFIG.title)?.textContent);
     };
 
-    const applyFilters = () => {
+    const apply = () => {
       const normalizedCategory = normalize(activeCategory);
-      const allSelected =
-        normalizedCategory === normalize(CONFIG.allLabel);
-
-      let matchingIndex = 0;
-      let matchingTotal = 0;
+      const allSelected = normalizedCategory === normalize(CONFIG.allLabel);
+      let matchIndex = 0;
+      let matchTotal = 0;
 
       currentItems().forEach((item) => {
-        const categoryMatch =
-          allSelected ||
-          normalize(item.dataset.blogCategory) === normalizedCategory;
+        // Category archives are already pre-filtered by Webflow.
+        const categoryMatch = isCategoryPage
+          ? true
+          : allSelected || normalize(item.dataset.blogCategory) === normalizedCategory;
 
-        const searchMatch =
-          !query || item.dataset.blogTitle.includes(query);
-
+        const searchMatch = !query || item.dataset.blogTitle.includes(query);
         const matches = categoryMatch && searchMatch;
 
         if (matches) {
-          matchingTotal += 1;
-          matchingIndex += 1;
+          matchTotal += 1;
+          matchIndex += 1;
         }
 
-        const overLimit =
-          !isCategoryPage && matchingIndex > visibleLimit;
-
+        const overLimit = isBlogPage && matchIndex > visibleLimit;
         item.hidden = !matches || overLimit;
         item.style.display = item.hidden ? "none" : "";
         item.setAttribute("aria-hidden", item.hidden ? "true" : "false");
       });
 
-      if (!isCategoryPage && viewMore) {
-        viewMore.hidden = matchingTotal <= visibleLimit;
-      }
-
-      if (!isCategoryPage && pagination) {
-        pagination.hidden = matchingTotal <= visibleLimit;
-      }
-
-      if (isCategoryPage && pagination) {
-        pagination.hidden = true;
-      }
-
-      if (noResults) {
-        noResults.hidden = matchingTotal !== 0;
-      }
+      if (viewMore) viewMore.hidden = matchTotal <= visibleLimit;
+      if (noResults) noResults.hidden = matchTotal !== 0;
     };
 
-    const resetLimitAndFilter = () => {
-      visibleLimit = isCategoryPage ? Infinity : CONFIG.pageSize;
-      applyFilters();
-    };
-
-    ensureControls();
     currentItems().forEach(assignCategory);
-    setActiveButton(activeCategory);
 
-    buttons.forEach((button) => {
-      button.setAttribute("role", "button");
-      button.setAttribute("tabindex", "0");
+    if (isBlogPage) {
+      setActiveButton(buttons, activeCategory);
 
-      const selectCategory = () => {
-        const nextCategory =
-          button.getAttribute("data-attributes") || CONFIG.allLabel;
+      buttons.forEach((button) => {
+        button.setAttribute("role", "button");
+        button.setAttribute("tabindex", "0");
 
-        if (isCategoryPage) {
-          const targetUrl = categoryUrl(nextCategory);
+        const selectCategory = (event) => {
+          event?.preventDefault?.();
+          activeCategory = button.getAttribute("data-attributes") || CONFIG.allLabel;
+          visibleLimit = CONFIG.pageSize;
+          setActiveButton(buttons, activeCategory);
+          syncViewAll();
+          apply();
+        };
 
-          if (cleanPath(targetUrl) !== currentPath) {
-            window.location.assign(targetUrl);
+        button.addEventListener("click", selectCategory);
+        button.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectCategory(event);
           }
-
-          return;
-        }
-
-        activeCategory = nextCategory;
-        setActiveButton(activeCategory);
-        resetLimitAndFilter();
-        syncViewAllControls();
-      };
-
-      button.addEventListener("click", selectCategory);
-
-      button.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          selectCategory();
-        }
+        });
       });
-    });
+    }
 
     if (searchInput) {
       searchInput.addEventListener("input", () => {
         query = normalize(searchInput.value);
-        resetLimitAndFilter();
+        if (isBlogPage) visibleLimit = CONFIG.pageSize;
+        apply();
       });
-
-      searchInput.closest("form")?.addEventListener("submit", (event) => {
-        event.preventDefault();
-      });
+      searchInput.closest("form")?.addEventListener("submit", (event) => event.preventDefault());
     }
 
     viewMore?.addEventListener("click", () => {
       visibleLimit += CONFIG.pageSize;
-      applyFilters();
+      apply();
     });
 
-    applyFilters();
+    apply();
 
+    /* ---------------------------------------------------------
+       LOAD ALL NATIVE WEBFLOW PAGINATION PAGES IN BACKGROUND
+    --------------------------------------------------------- */
     const seenPages = new Set();
     const seenSlugs = new Set(currentItems().map(slugFromItem));
-
-    let nextUrl = initialNext
-      ? new URL(initialNext, window.location.href).href
-      : "";
-
-    if (!isCategoryPage && viewMore && nextUrl) {
-      viewMore.disabled = true;
-      viewMore.textContent = "Loading...";
-      pagination.hidden = false;
-    }
+    let nextUrl = initialNext ? new URL(initialNext, window.location.href).href : "";
 
     try {
       while (nextUrl && !seenPages.has(nextUrl)) {
         seenPages.add(nextUrl);
 
-        const response = await fetch(nextUrl, {
-          credentials: "same-origin"
-        });
-
-        if (!response.ok) {
-          throw new Error(`CMS page failed: ${response.status}`);
-        }
+        const response = await fetch(nextUrl, { credentials: "same-origin" });
+        if (!response.ok) throw new Error(`CMS page failed: ${response.status}`);
 
         const html = await response.text();
         const doc = new DOMParser().parseFromString(html, "text/html");
 
         [...doc.querySelectorAll(CONFIG.item)].forEach((sourceItem) => {
           const slug = slugFromItem(sourceItem);
-
           if (!slug || seenSlugs.has(slug)) return;
 
           seenSlugs.add(slug);
-
           const item = document.importNode(sourceItem, true);
           assignCategory(item);
           list.appendChild(item);
         });
 
-        const rawNext = doc
-          .querySelector(`${CONFIG.pagination} .w-pagination-next`)
+        const rawNext = doc.querySelector(`${CONFIG.pagination} .w-pagination-next`)
           ?.getAttribute("href");
-
-        nextUrl = rawNext
-          ? new URL(rawNext, window.location.href).href
-          : "";
+        nextUrl = rawNext ? new URL(rawNext, window.location.href).href : "";
       }
     } catch (error) {
       console.error("Detect blog filters:", error);
     } finally {
-      if (!isCategoryPage && viewMore) {
-        viewMore.disabled = false;
-        viewMore.textContent = CONFIG.viewMoreLabel;
-      }
-
-      if (isCategoryPage) {
-        visibleLimit = Infinity;
-      }
-
-      applyFilters();
-      syncViewAllControls();
+      if (isCategoryPage) visibleLimit = Infinity;
+      apply();
+      syncViewAll();
     }
   };
 
