@@ -292,7 +292,7 @@ ${ROOT_SELECTOR} ${LEGACY_SELECTOR} h5 {
   };
 
   const normalize = () => {
-    const path = (window.location.pathname || "").replace(/\\/+$/, "");
+    let path = window.location.pathname || "";\n    if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
     if (path !== "/blog/partner-network-any-pilot-any-drone") return;
 
     const root = document.querySelector(ROOT_SELECTOR);
