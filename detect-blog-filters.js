@@ -7,6 +7,8 @@
     item: ".blog-list > .blog-item",
     title: ".blog-item-title",
     categoryButton: ".tab-btn[data-attributes]",
+    secondaryButton: ".tab-btn[data-secondary-attributes]",
+    secondaryValue: "[data-blog-secondary-category='true']",
     search: "#Search",
     pagination: ".blog-pagination",
     pageSize: 12,
@@ -109,10 +111,28 @@
     return href.split("?")[0].replace(/\/$/, "").split("/").pop() || "";
   };
 
+  const makeInteractive = (button) => {
+    button.setAttribute("role", "button");
+    button.setAttribute("tabindex", "0");
+  };
+
   const setActiveButton = (buttons, category) => {
     const target = normalize(category);
     buttons.forEach((button) => {
+      makeInteractive(button);
       const selected = normalize(button.getAttribute("data-attributes")) === target;
+      button.classList.toggle(CONFIG.activeClass, selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  };
+
+  const setActiveSecondaryButton = (buttons, category) => {
+    const target = normalize(category);
+    buttons.forEach((button) => {
+      makeInteractive(button);
+      const selected =
+        !!target &&
+        normalize(button.getAttribute("data-secondary-attributes")) === target;
       button.classList.toggle(CONFIG.activeClass, selected);
       button.setAttribute("aria-pressed", selected ? "true" : "false");
     });
@@ -123,7 +143,12 @@
     const isBlogPage = currentPath === "/blog";
     const isCategoryPage = currentPath.startsWith("/category/");
     const buttons = [...document.querySelectorAll(CONFIG.categoryButton)];
+    const secondaryButtons = [...document.querySelectorAll(CONFIG.secondaryButton)];
     const pageCategory = categoryFromPath();
+
+    let activeSecondary =
+      secondaryButtons.find((button) => button.classList.contains(CONFIG.activeClass))
+        ?.getAttribute("data-secondary-attributes") || "";
 
     let activeCategory =
       pageCategory ||
@@ -136,6 +161,8 @@
     if (isCategoryPage) {
       setActiveButton(buttons, activeCategory);
     }
+
+    setActiveSecondaryButton(secondaryButtons, activeSecondary);
 
     // Separate View All CTA exists only on /blog and follows the selected filter.
     const viewAllControls = isBlogPage
@@ -230,6 +257,21 @@
       // Every article must prove its own category via the map or data attribute.
       item.dataset.blogCategory = mapped || embedded || "Uncategorized";
       item.dataset.blogTitle = normalize(item.querySelector(CONFIG.title)?.textContent);
+
+      // Secondary Categories are fully dynamic and come from the nested CMS list
+      // inside each .blog-item. No category names are hardcoded in this script.
+      item._detectSecondaryCategories = new Set(
+        [...item.querySelectorAll(CONFIG.secondaryValue)]
+          .map((node) => {
+            const attr = node.getAttribute("data-blog-secondary-category");
+            const raw =
+              attr && normalize(attr) !== "true"
+                ? attr
+                : node.textContent;
+            return normalize(raw);
+          })
+          .filter(Boolean)
+      );
     };
 
     const apply = () => {
@@ -242,8 +284,12 @@
         const categoryMatch =
           allSelected || normalize(item.dataset.blogCategory) === normalizedCategory;
 
+        const secondaryMatch =
+          !activeSecondary ||
+          item._detectSecondaryCategories?.has(normalize(activeSecondary));
+
         const searchMatch = !query || item.dataset.blogTitle.includes(query);
-        const matches = categoryMatch && searchMatch;
+        const matches = categoryMatch && secondaryMatch && searchMatch;
 
         if (matches) {
           matchTotal += 1;
@@ -262,14 +308,15 @@
 
     currentItems().forEach(assignCategory);
 
-    // Only /blog tabs are JS filters.
-    // On /category/* your manually-added links are left alone.
+    // Primary Categories:
+    // - /blog: filter instantly on the current page.
+    // - /category/*: navigate to the corresponding primary category page,
+    //   because the CMS template itself is already scoped to one primary category.
     if (isBlogPage) {
       setActiveButton(buttons, activeCategory);
 
       buttons.forEach((button) => {
-        button.setAttribute("role", "button");
-        button.setAttribute("tabindex", "0");
+        makeInteractive(button);
 
         const selectCategory = (event) => {
           event?.preventDefault?.();
@@ -288,7 +335,62 @@
           }
         });
       });
+    } else if (isCategoryPage) {
+      buttons.forEach((button) => {
+        makeInteractive(button);
+
+        const goToCategory = (event) => {
+          event?.preventDefault?.();
+          const category =
+            button.getAttribute("data-attributes") || CONFIG.allLabel;
+          const href = categoryUrl(category);
+
+          if (cleanPath(href) !== currentPath) {
+            window.location.assign(href);
+          }
+        };
+
+        button.addEventListener("click", goToCategory);
+        button.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            goToCategory(event);
+          }
+        });
+      });
     }
+
+    // Secondary Categories are always in-page filters.
+    // Their names come directly from CMS-generated data-secondary-attributes values,
+    // so newly-created Secondary Categories require no JS changes.
+    secondaryButtons.forEach((button) => {
+      makeInteractive(button);
+
+      const selectSecondary = (event) => {
+        event?.preventDefault?.();
+
+        const category =
+          button.getAttribute("data-secondary-attributes") || "";
+
+        activeSecondary =
+          normalize(activeSecondary) === normalize(category)
+            ? ""
+            : category;
+
+        if (isBlogPage) visibleLimit = CONFIG.pageSize;
+
+        setActiveSecondaryButton(secondaryButtons, activeSecondary);
+        apply();
+      };
+
+      button.addEventListener("click", selectSecondary);
+      button.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectSecondary(event);
+        }
+      });
+    });
 
     if (searchInput) {
       searchInput.addEventListener("input", () => {
@@ -345,6 +447,8 @@
       if (isCategoryPage) visibleLimit = Infinity;
       apply();
       syncViewAll();
+      setActiveButton(buttons, activeCategory);
+      setActiveSecondaryButton(secondaryButtons, activeSecondary);
     }
   };
 
