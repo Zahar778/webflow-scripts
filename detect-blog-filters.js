@@ -7,6 +7,7 @@
     item: ".blog-list > .blog-item",
     title: ".blog-item-title",
     categoryButton: ".tab-btn[data-attributes]",
+    primaryValue: "[data-blog-category]",
     secondaryButton: ".tab-btn[data-secondary-attributes]",
     secondaryValue: "[data-blog-secondary-category='true']",
     search: "#Search",
@@ -16,20 +17,6 @@
     activeClass: "active",
     noResultsText: "No articles found.",
     viewAllSelector: "[data-blog-view-all='true'], [data-blog-view-all], .blog-view-all"
-  };
-
-  // Used only for:
-  // 1) determining the active category from /category/<slug>
-  // 2) setting the separate View All CTA URL on /blog
-  // The script DOES NOT change category-tab hrefs on /category/* pages.
-  const CATEGORY_ROUTES = {
-    "View all": "/category/view-all",
-    "Asset Inspection & Management": "/category/asset-inspection-management",
-    "Grid Reliability": "/category/grid-reliability",
-    "Drone Operations": "/category/drone-operations",
-    "Case Studies": "/category/case-studies",
-    "Newsroom": "/category/newsroom",
-    "Product & Platform": "/category/product-platform"
   };
 
   const CATEGORY_BY_SLUG = {
@@ -92,18 +79,23 @@
     return path || "/";
   };
 
-  const categoryUrl = (label) => {
-    const target = normalize(label);
-    const pair = Object.entries(CATEGORY_ROUTES)
-      .find(([name]) => normalize(name) === target);
-    return pair?.[1] || CATEGORY_ROUTES[CONFIG.allLabel];
-  };
+  const categorySlug = (value) => normalize(value)
+    .replace(/&/g, " ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
-  const categoryFromPath = () => {
+  const categoryUrl = (label) =>
+    `/category/${categorySlug(label || CONFIG.allLabel)}`;
+
+  const categoryFromPath = (buttons) => {
     const current = cleanPath(window.location.pathname);
-    const pair = Object.entries(CATEGORY_ROUTES)
-      .find(([, route]) => cleanPath(route) === current);
-    return pair?.[0] || null;
+    const slug = current.split("/").pop() || "";
+
+    const button = buttons.find((item) =>
+      categorySlug(item.getAttribute("data-attributes")) === slug
+    );
+
+    return button?.getAttribute("data-attributes") || null;
   };
 
   const slugFromItem = (item) => {
@@ -144,7 +136,7 @@
     const isCategoryPage = currentPath.startsWith("/category/");
     const buttons = [...document.querySelectorAll(CONFIG.categoryButton)];
     const secondaryButtons = [...document.querySelectorAll(CONFIG.secondaryButton)];
-    const pageCategory = categoryFromPath();
+    const pageCategory = categoryFromPath(buttons);
 
     let activeSecondary =
       secondaryButtons.find((button) => button.classList.contains(CONFIG.activeClass))
@@ -247,15 +239,67 @@
 
     const currentItems = () => [...list.querySelectorAll(":scope > .blog-item")];
 
-    const assignCategory = (item) => {
-      const slug = slugFromItem(item);
-      const mapped = CATEGORY_BY_SLUG[slug];
-      const embedded = item.querySelector("[data-blog-category]")
-        ?.getAttribute("data-blog-category");
+    const primaryLabels = buttons
+      .map((button) => button.getAttribute("data-attributes"))
+      .filter((label) => label && normalize(label) !== normalize(CONFIG.allLabel));
 
-      // Do NOT fall back to the current page category here.
-      // Every article must prove its own category via the map or data attribute.
-      item.dataset.blogCategory = mapped || embedded || "Uncategorized";
+    const primaryByNormalized = new Map(
+      primaryLabels.map((label) => [normalize(label), label])
+    );
+
+    const primaryBySlug = new Map(
+      primaryLabels.map((label) => [categorySlug(label), label])
+    );
+
+    const readPrimaryCategory = (item) => {
+      // 1) Preferred: explicit CMS value inside the card.
+      // Supports:
+      //    data-blog-category="Asset Inspection & Management"
+      // and:
+      //    data-blog-category="true">Asset Inspection & Management
+      const explicit = item.querySelector(CONFIG.primaryValue);
+      if (explicit) {
+        const attr = explicit.getAttribute("data-blog-category");
+        const raw =
+          attr && normalize(attr) !== "true"
+            ? attr
+            : explicit.textContent;
+
+        const match = primaryByNormalized.get(normalize(raw));
+        if (match) return match;
+        if (normalize(raw)) return raw.trim();
+      }
+
+      // 2) If the category pill is a link to /category/<slug>, use the href.
+      const categoryLink = item.querySelector("a[href*='/category/']");
+      if (categoryLink) {
+        const href = categoryLink.getAttribute("href") || "";
+        const slug = cleanPath(href).split("/").pop() || "";
+        const match = primaryBySlug.get(slug);
+        if (match) return match;
+      }
+
+      // 3) Zero-config fallback: find an element whose text exactly matches
+      // one of the current Primary Category filter labels.
+      const candidates = item.querySelectorAll("p, span, a, div");
+      for (const node of candidates) {
+        const match = primaryByNormalized.get(normalize(node.textContent));
+        if (match) return match;
+      }
+
+      // 4) Legacy fallback for old cards that predate dynamic CMS attributes.
+      const slug = slugFromItem(item);
+      if (CATEGORY_BY_SLUG[slug]) return CATEGORY_BY_SLUG[slug];
+
+      // 5) On a /category/* template every item is already scoped to
+      // the current Primary Category, so this is safe.
+      if (isCategoryPage && pageCategory) return pageCategory;
+
+      return "Uncategorized";
+    };
+
+    const assignCategory = (item) => {
+      item.dataset.blogCategory = readPrimaryCategory(item);
       item.dataset.blogTitle = normalize(item.querySelector(CONFIG.title)?.textContent);
 
       // Secondary Categories are fully dynamic and come from the nested CMS list
