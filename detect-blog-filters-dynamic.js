@@ -463,7 +463,7 @@
       const syncExternalViewAll = () => {
         const href =
           normalize(activeCategory) === normalize(CONFIG.allLabel)
-            ? "/blog"
+            ? "/category/view-all"
             : `${CONFIG.categoryBasePath}${slugify(activeCategory)}`;
 
         externalViewAllControls.forEach((control) => {
