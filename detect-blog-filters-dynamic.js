@@ -174,34 +174,45 @@
       return cleanPath(href).split("/").pop() || "";
     };
 
-    const readPrimaryCategory = (item) => {
-      // Preferred: visible CMS category pill in the article card.
-      const visible = cleanText(
+    const readItemCategories = (item) => {
+      const values = new Set();
+
+      const addCategory = (value) => {
+        const raw = cleanText(value);
+        const normalized = normalize(raw);
+
+        if (!raw || !primaryByNormalized.has(normalized)) {
+          return;
+        }
+
+        values.add(primaryByNormalized.get(normalized));
+      };
+
+      // Visible category pill.
+      addCategory(
         item.querySelector(CONFIG.primaryPill)?.textContent
       );
 
-      if (visible) {
-        return primaryByNormalized.get(normalize(visible)) || visible;
-      }
-
-      // Support an explicit attribute if one is present.
+      // Optional explicit category attribute.
       const attr = cleanText(item.getAttribute("data-blog-category"));
+
       if (attr && normalize(attr) !== "true") {
-        return primaryByNormalized.get(normalize(attr)) || attr;
+        attr.split(",").forEach(addCategory);
       }
 
-      // Fallback: hidden CMS reference output.
+      // Current Webflow structure:
+      // .blog-item > .filter-hiden > nested CMS list(s)
+      // This contains every category connected to the article, including
+      // secondary categories such as Construction & Commissioning.
       const hidden = item.querySelector(CONFIG.hiddenMeta);
 
       if (hidden) {
-        for (const node of hidden.querySelectorAll("p, span, a")) {
-          const raw = cleanText(node.textContent);
-          const match = primaryByNormalized.get(normalize(raw));
-          if (match) return match;
-        }
+        hidden.querySelectorAll("p, span, a").forEach((node) => {
+          addCategory(node.textContent);
+        });
       }
 
-      return "Uncategorized";
+      return values;
     };
 
     const readSecondaryCategories = (item) => {
@@ -246,10 +257,16 @@
     };
 
     const assignItemMeta = (item) => {
-      item.dataset.blogCategory = readPrimaryCategory(item);
+      const categories = readItemCategories(item);
+
+      item._detectBlogCategories = categories;
+      item.dataset.blogCategory =
+        [...categories][0] || "Uncategorized";
+
       item.dataset.blogTitle = normalize(
         item.querySelector(CONFIG.title)?.textContent
       );
+
       item._detectSecondaryCategories = readSecondaryCategories(item);
     };
 
@@ -319,7 +336,7 @@
         const primaryMatch =
           !isBlogPage ||
           allPrimarySelected ||
-          normalize(item.dataset.blogCategory) === activePrimaryNormalized;
+          item._detectBlogCategories?.has(activePrimaryNormalized);
 
         const secondaryMatch =
           !activeSecondary ||
