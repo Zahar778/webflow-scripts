@@ -1,22 +1,40 @@
-/* Detect blog filters — fully dynamic CMS categories + secondary categories */
+/* Detect blog filters — dynamic Primary + Secondary CMS filters
+ *
+ * Logic:
+ * - /blog:
+ *   Primary Categories = in-page filters
+ *   Secondary Categories = in-page filters
+ *   Search = in-page filter
+ *   View More = 12 items at a time
+ *
+ * - every other page that contains this filter/list (including
+ *   /categories/<item-slug> and /category/view-all):
+ *   Primary Categories are NOT touched by JS at all. Webflow links handle them.
+ *   Secondary Categories filter the articles already present on that page.
+ *   Search filters in place.
+ *   Secondary buttons with zero matching articles are hidden after all CMS
+ *   pagination pages have been loaded. If none are available, the whole
+ *   .s-categories_box is hidden.
+ */
 (() => {
   "use strict";
 
   const CONFIG = {
-    root: ".blog-page-container",
-    list: ".blog-list",
-    item: ".blog-list > .blog-item",
-    title: ".blog-item-title",
     categoryList: ".categories",
     secondaryList: ".secondary-categories",
     secondaryBox: ".s-categories_box",
+    list: ".blog-list",
+    item: ".blog-list > .blog-item",
+    title: ".blog-item-title",
+    primaryPill: ".blog-item-content-tag-text",
+    hiddenMeta: ".filter-hiden",
     search: "#Search",
     pagination: ".blog-pagination",
     pageSize: 12,
     allLabel: "View all",
     activeClass: "active",
     noResultsText: "No articles found.",
-    viewAllSelector: "[data-blog-view-all='true'], [data-blog-view-all], .blog-view-all",
+    externalViewAll: "[data-blog-view-all='true'], [data-blog-view-all], .blog-view-all",
     categoryBasePath: "/categories/"
   };
 
@@ -40,185 +58,208 @@
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-  const slugFromHref = (href, basePath) => {
-    if (!href) return "";
-    try {
-      const url = new URL(href, window.location.href);
-      const path = cleanPath(url.pathname);
-      if (!path.startsWith(basePath)) return "";
-      return path.slice(basePath.length).split("/")[0] || "";
-    } catch {
-      return "";
-    }
-  };
-
-  const buttonLabel = (button) => cleanText(button?.textContent);
+  const labelOf = (button) => cleanText(button?.textContent);
 
   const makeInteractive = (button) => {
     button.setAttribute("role", "button");
     button.setAttribute("tabindex", "0");
   };
 
-  const buttonSlug = (button) => {
-    const label = buttonLabel(button);
-    if (normalize(label) === normalize(CONFIG.allLabel)) return "";
-
-    const explicit =
-      cleanText(button.getAttribute("data-category-slug")) ||
-      cleanText(button.getAttribute("data-slug"));
-
-    if (explicit) return explicit.replace(/^\/+|\/+$/g, "");
-
-    const explicitUrl = button.getAttribute("data-category-url");
-    const explicitUrlSlug = slugFromHref(explicitUrl, CONFIG.categoryBasePath);
-    if (explicitUrlSlug) return explicitUrlSlug;
-
-    const anchor =
-      (button.matches("a[href]") ? button : null) ||
-      button.closest("a[href]") ||
-      button.querySelector("a[href]");
-
-    const anchorSlug = slugFromHref(
-      anchor?.getAttribute("href") || "",
-      CONFIG.categoryBasePath
-    );
-    if (anchorSlug) return anchorSlug;
-
-    return slugify(label);
-  };
-
-  const categoryUrl = (buttonOrLabel) => {
-    const label =
-      typeof buttonOrLabel === "string"
-        ? cleanText(buttonOrLabel)
-        : buttonLabel(buttonOrLabel);
-
-    if (!label || normalize(label) === normalize(CONFIG.allLabel)) {
-      return "/blog";
-    }
-
-    const slug =
-      typeof buttonOrLabel === "string"
-        ? slugify(label)
-        : buttonSlug(buttonOrLabel);
-
-    return `${CONFIG.categoryBasePath}${slug}`;
-  };
-
-  const setActivePrimary = (buttons, label) => {
-    const target = normalize(label);
+  const setActivePrimary = (buttons, activeLabel) => {
+    const active = normalize(activeLabel);
 
     buttons.forEach((button) => {
+      const selected = normalize(labelOf(button)) === active;
       makeInteractive(button);
-
-      const currentLabel = buttonLabel(button);
-      const selected = normalize(currentLabel) === target;
-
-      button.setAttribute("data-attributes", currentLabel);
-
       button.classList.toggle(CONFIG.activeClass, selected);
       button.setAttribute("aria-pressed", selected ? "true" : "false");
     });
   };
 
-  const setActiveSecondary = (buttons, label) => {
-    const target = normalize(label);
+  const setActiveSecondary = (buttons, activeLabel) => {
+    const active = normalize(activeLabel);
 
     buttons.forEach((button) => {
+      const selected = !!active && normalize(labelOf(button)) === active;
       makeInteractive(button);
-
-      const currentLabel = buttonLabel(button);
-      const selected = !!target && normalize(currentLabel) === target;
-
-      button.setAttribute("data-secondary-attributes", currentLabel);
-
       button.classList.toggle(CONFIG.activeClass, selected);
       button.setAttribute("aria-pressed", selected ? "true" : "false");
     });
   };
 
   const init = async () => {
-    const root = document.querySelector(CONFIG.root) || document;
+    const categoryList = document.querySelector(CONFIG.categoryList);
+    const secondaryList = document.querySelector(CONFIG.secondaryList);
+    const list = document.querySelector(CONFIG.list);
+
+    // This script only runs where the actual blog filter + blog list exist.
+    if (!categoryList || !secondaryList || !list) return;
+
+    // IMPORTANT:
+    // There are multiple .blog-page-container elements on the page.
+    // The first one is the featured article. We scope controls to the container
+    // that ACTUALLY contains .categories.
+    const controlsRoot =
+      categoryList.closest(".blog-page-container") ||
+      categoryList.parentElement ||
+      document;
+
     const currentPath = cleanPath(window.location.pathname);
     const isBlogPage = currentPath === "/blog";
-    const isCategoryPage = currentPath.startsWith(CONFIG.categoryBasePath);
+    const isSecondaryOnlyPage = !isBlogPage;
 
-    if (!isBlogPage && !isCategoryPage) return;
+    const dynamicPrimaryButtons = [
+      ...categoryList.querySelectorAll(".tab-btn")
+    ];
 
-    const allTabButtons = [...root.querySelectorAll(".tab-btn")];
+    // Static View all in the PRIMARY filter only.
+    // On non-/blog pages this element is never changed or bound by this script.
+    const primaryViewAllButton = [
+      ...controlsRoot.querySelectorAll(".tab-btn")
+    ].find((button) =>
+      !button.closest(CONFIG.categoryList) &&
+      !button.closest(CONFIG.secondaryList) &&
+      normalize(labelOf(button)) === normalize(CONFIG.allLabel)
+    ) || null;
 
-    const secondaryButtons = allTabButtons.filter((button) =>
-      button.closest(CONFIG.secondaryList)
-    );
+    const primaryButtons = [
+      ...(primaryViewAllButton ? [primaryViewAllButton] : []),
+      ...dynamicPrimaryButtons
+    ];
 
-    const primaryButtons = allTabButtons.filter((button) => {
-      if (button.closest(CONFIG.secondaryList)) return false;
+    const secondaryButtons = [
+      ...secondaryList.querySelectorAll(".tab-btn")
+    ];
 
-      return (
-        !!button.closest(CONFIG.categoryList) ||
-        normalize(buttonLabel(button)) === normalize(CONFIG.allLabel)
-      );
-    });
+    const primaryLabels = dynamicPrimaryButtons
+      .map(labelOf)
+      .filter(Boolean);
 
-    primaryButtons.forEach((button) => {
-      button.setAttribute("data-attributes", buttonLabel(button));
-    });
-
-    secondaryButtons.forEach((button) => {
-      button.setAttribute("data-secondary-attributes", buttonLabel(button));
-    });
-
-    const primaryLabels = primaryButtons
-      .map(buttonLabel)
-      .filter((label) => label && normalize(label) !== normalize(CONFIG.allLabel));
+    const secondaryLabels = secondaryButtons
+      .map(labelOf)
+      .filter(Boolean);
 
     const primaryByNormalized = new Map(
       primaryLabels.map((label) => [normalize(label), label])
     );
 
-    const primaryBySlug = new Map(
-      primaryButtons
-        .filter((button) => normalize(buttonLabel(button)) !== normalize(CONFIG.allLabel))
-        .map((button) => [buttonSlug(button), buttonLabel(button)])
-        .filter(([slug]) => !!slug)
-    );
-
-    const secondaryLabels = secondaryButtons
-      .map(buttonLabel)
-      .filter(Boolean);
-
     const secondaryByNormalized = new Map(
       secondaryLabels.map((label) => [normalize(label), label])
     );
 
-    const currentCategorySlug = isCategoryPage
-      ? currentPath.slice(CONFIG.categoryBasePath.length).split("/")[0]
-      : "";
-
-    const pageCategory =
-      primaryBySlug.get(currentCategorySlug) ||
-      primaryByNormalized.get(normalize(
-        document.querySelector("[data-current-category]")?.textContent
-      )) ||
-      "";
-
-    let activeCategory = isCategoryPage
-      ? (pageCategory || CONFIG.allLabel)
-      : CONFIG.allLabel;
-
+    let activeCategory = CONFIG.allLabel;
     let activeSecondary = "";
+    let query = "";
+    let visibleLimit = isBlogPage ? CONFIG.pageSize : Infinity;
 
-    setActivePrimary(primaryButtons, activeCategory);
-    setActiveSecondary(secondaryButtons, activeSecondary);
+    // On category/view-all pages do not show secondary controls until we know
+    // which ones actually exist in ALL CMS pagination pages.
+    const secondaryBox =
+      controlsRoot.querySelector(CONFIG.secondaryBox) ||
+      document.querySelector(CONFIG.secondaryBox);
 
-    const list = root.querySelector(CONFIG.list) || document.querySelector(CONFIG.list);
-    if (!list) return;
+    if (isSecondaryOnlyPage && secondaryBox) {
+      secondaryBox.style.visibility = "hidden";
+    }
 
-    document.querySelector("[fs-cmsfilter-element='filters']")
-      ?.removeAttribute("fs-cmsfilter-element");
-    list.removeAttribute("fs-cmsfilter-element");
+    const currentItems = () => [
+      ...list.querySelectorAll(":scope > .blog-item")
+    ];
 
-    const originalInput = root.querySelector(CONFIG.search) || document.querySelector(CONFIG.search);
+    const slugFromItem = (item) => {
+      const href =
+        item.querySelector("a[href*='/blog/']")?.getAttribute("href") || "";
+
+      return cleanPath(href).split("/").pop() || "";
+    };
+
+    const readPrimaryCategory = (item) => {
+      // Preferred: visible CMS category pill in the article card.
+      const visible = cleanText(
+        item.querySelector(CONFIG.primaryPill)?.textContent
+      );
+
+      if (visible) {
+        return primaryByNormalized.get(normalize(visible)) || visible;
+      }
+
+      // Support an explicit attribute if one is present.
+      const attr = cleanText(item.getAttribute("data-blog-category"));
+      if (attr && normalize(attr) !== "true") {
+        return primaryByNormalized.get(normalize(attr)) || attr;
+      }
+
+      // Fallback: hidden CMS reference output.
+      const hidden = item.querySelector(CONFIG.hiddenMeta);
+
+      if (hidden) {
+        for (const node of hidden.querySelectorAll("p, span, a")) {
+          const raw = cleanText(node.textContent);
+          const match = primaryByNormalized.get(normalize(raw));
+          if (match) return match;
+        }
+      }
+
+      return "Uncategorized";
+    };
+
+    const readSecondaryCategories = (item) => {
+      const values = new Set();
+
+      // Explicit custom attribute support.
+      item.querySelectorAll("[data-blog-secondary-category]").forEach((node) => {
+        const attr = cleanText(
+          node.getAttribute("data-blog-secondary-category")
+        );
+
+        const raw =
+          attr && normalize(attr) !== "true"
+            ? attr
+            : cleanText(node.textContent);
+
+        const match = secondaryByNormalized.get(normalize(raw));
+
+        if (match) {
+          values.add(normalize(match));
+        }
+      });
+
+      // Current Webflow structure:
+      // .blog-item > .filter-hiden > two nested CMS lists
+      // We do not rely on list order. We match the rendered CMS text against
+      // the currently rendered Secondary Category filter labels.
+      const hidden = item.querySelector(CONFIG.hiddenMeta);
+
+      if (hidden) {
+        hidden.querySelectorAll("p, span, a").forEach((node) => {
+          const raw = cleanText(node.textContent);
+          const normalized = normalize(raw);
+
+          if (secondaryByNormalized.has(normalized)) {
+            values.add(normalized);
+          }
+        });
+      }
+
+      return values;
+    };
+
+    const assignItemMeta = (item) => {
+      item.dataset.blogCategory = readPrimaryCategory(item);
+      item.dataset.blogTitle = normalize(
+        item.querySelector(CONFIG.title)?.textContent
+      );
+      item._detectSecondaryCategories = readSecondaryCategories(item);
+    };
+
+    currentItems().forEach(assignItemMeta);
+
+    // Search: clone the input so any previous CMS/Finsweet listeners cannot
+    // fight with this filter.
+    const originalInput =
+      controlsRoot.querySelector(CONFIG.search) ||
+      document.querySelector(CONFIG.search);
+
     let searchInput = null;
 
     if (originalInput) {
@@ -228,7 +269,7 @@
     }
 
     const pagination =
-      root.querySelector(CONFIG.pagination) ||
+      controlsRoot.querySelector(CONFIG.pagination) ||
       document.querySelector(CONFIG.pagination);
 
     const nativeNext = pagination?.querySelector(".w-pagination-next");
@@ -237,9 +278,6 @@
 
     nativeNext?.setAttribute("hidden", "hidden");
     nativePrevious?.setAttribute("hidden", "hidden");
-
-    let visibleLimit = isCategoryPage ? Infinity : CONFIG.pageSize;
-    let query = "";
 
     let noResults =
       list.parentElement?.querySelector(":scope > .detect-blog-empty") || null;
@@ -267,150 +305,20 @@
       }
     }
 
-    const viewAllControls = isBlogPage
-      ? [...root.querySelectorAll(CONFIG.viewAllSelector)]
-      : [];
-
-    const currentItems = () => [
-      ...list.querySelectorAll(":scope > .blog-item")
-    ];
-
-    const slugFromItem = (item) => {
-      const href =
-        item.querySelector("a[href*='/blog/']")?.getAttribute("href") || "";
-
-      return cleanPath(href).split("/").pop() || "";
-    };
-
-    const readPrimaryCategory = (item) => {
-      const ownAttr = cleanText(item.getAttribute("data-blog-category"));
-      if (ownAttr && normalize(ownAttr) !== "true") {
-        return primaryByNormalized.get(normalize(ownAttr)) || ownAttr;
-      }
-
-      const explicit = item.querySelector("[data-blog-category]");
-      if (explicit) {
-        const attr = cleanText(explicit.getAttribute("data-blog-category"));
-        const raw =
-          attr && normalize(attr) !== "true"
-            ? attr
-            : cleanText(explicit.textContent);
-
-        if (raw) return primaryByNormalized.get(normalize(raw)) || raw;
-      }
-
-      const visiblePill = cleanText(
-        item.querySelector(".blog-item-content-tag-text")?.textContent
-      );
-
-      if (visiblePill) {
-        return primaryByNormalized.get(normalize(visiblePill)) || visiblePill;
-      }
-
-      for (const directChild of [...item.children]) {
-        if (!directChild.classList.contains("w-dyn-list")) continue;
-
-        for (const node of directChild.querySelectorAll("p, span, a")) {
-          const raw = cleanText(node.textContent);
-          const match = primaryByNormalized.get(normalize(raw));
-          if (match) return match;
-        }
-      }
-
-      if (isCategoryPage && pageCategory) return pageCategory;
-
-      return "Uncategorized";
-    };
-
-    const readSecondaryCategories = (item, primaryCategory) => {
-      const values = new Set();
-
-      item.querySelectorAll("[data-blog-secondary-category]").forEach((node) => {
-        const attr = cleanText(
-          node.getAttribute("data-blog-secondary-category")
-        );
-
-        const raw =
-          attr && normalize(attr) !== "true"
-            ? attr
-            : cleanText(node.textContent);
-
-        if (raw) values.add(normalize(raw));
-      });
-
-      for (const directChild of [...item.children]) {
-        if (!directChild.classList.contains("w-dyn-list")) continue;
-
-        directChild.querySelectorAll("p, span, a").forEach((node) => {
-          const raw = cleanText(node.textContent);
-          const normalized = normalize(raw);
-
-          if (
-            normalized &&
-            normalized !== normalize(primaryCategory) &&
-            secondaryByNormalized.has(normalized)
-          ) {
-            values.add(normalized);
-          }
-        });
-      }
-
-      return values;
-    };
-
-    const assignItemMeta = (item) => {
-      const primaryCategory = readPrimaryCategory(item);
-
-      item.dataset.blogCategory = primaryCategory;
-      item.dataset.blogTitle = normalize(
-        item.querySelector(CONFIG.title)?.textContent
-      );
-
-      item._detectSecondaryCategories =
-        readSecondaryCategories(item, primaryCategory);
-    };
-
-    const syncViewAll = () => {
-      if (!isBlogPage) return;
-
-      const matchingButton = primaryButtons.find(
-        (button) => normalize(buttonLabel(button)) === normalize(activeCategory)
-      );
-
-      const href =
-        normalize(activeCategory) === normalize(CONFIG.allLabel)
-          ? "/blog"
-          : categoryUrl(matchingButton || activeCategory);
-
-      viewAllControls.forEach((control) => {
-        if (control.tagName === "A") {
-          control.setAttribute("href", href);
-          return;
-        }
-
-        control.dataset.detectViewAllUrl = href;
-
-        if (control.dataset.detectViewAllBound !== "true") {
-          control.dataset.detectViewAllBound = "true";
-          control.addEventListener("click", () => {
-            window.location.assign(control.dataset.detectViewAllUrl || "/blog");
-          });
-        }
-      });
-    };
-
     const apply = () => {
-      const normalizedCategory = normalize(activeCategory);
-      const allSelected =
-        normalizedCategory === normalize(CONFIG.allLabel);
+      const activePrimaryNormalized = normalize(activeCategory);
+      const allPrimarySelected =
+        activePrimaryNormalized === normalize(CONFIG.allLabel);
 
       let matchIndex = 0;
       let matchTotal = 0;
 
       currentItems().forEach((item) => {
-        const categoryMatch =
-          allSelected ||
-          normalize(item.dataset.blogCategory) === normalizedCategory;
+        // Primary filtering exists ONLY on /blog.
+        const primaryMatch =
+          !isBlogPage ||
+          allPrimarySelected ||
+          normalize(item.dataset.blogCategory) === activePrimaryNormalized;
 
         const secondaryMatch =
           !activeSecondary ||
@@ -419,10 +327,13 @@
           );
 
         const searchMatch =
-          !query || item.dataset.blogTitle.includes(query);
+          !query ||
+          (item.dataset.blogTitle || "").includes(query);
 
         const matches =
-          categoryMatch && secondaryMatch && searchMatch;
+          primaryMatch &&
+          secondaryMatch &&
+          searchMatch;
 
         if (matches) {
           matchTotal += 1;
@@ -449,128 +360,50 @@
       }
     };
 
-    const secondaryBox =
-      root.querySelector(CONFIG.secondaryBox) ||
-      document.querySelector(CONFIG.secondaryBox);
-
-    if (isCategoryPage && secondaryBox) {
-      secondaryBox.style.visibility = "hidden";
-    }
-
-    const syncSecondaryAvailability = () => {
-      if (!isCategoryPage) return;
-
-      const available = new Set();
-      const currentPrimary = normalize(pageCategory || activeCategory);
-
-      currentItems().forEach((item) => {
-        if (
-          currentPrimary &&
-          normalize(item.dataset.blogCategory) !== currentPrimary
-        ) {
-          return;
-        }
-
-        item._detectSecondaryCategories?.forEach((value) => {
-          available.add(value);
-        });
-      });
-
-      let visibleSecondaryCount = 0;
-
-      secondaryButtons.forEach((button) => {
-        const label = buttonLabel(button);
-        const normalized = normalize(label);
-        const isAvailable = available.has(normalized);
-
-        const wrapper =
-          button.closest(".w-dyn-item") || button;
-
-        wrapper.hidden = !isAvailable;
-        wrapper.style.display = isAvailable ? "" : "none";
-        button.setAttribute(
-          "aria-hidden",
-          isAvailable ? "false" : "true"
-        );
-
-        if (isAvailable) {
-          visibleSecondaryCount += 1;
-        } else if (normalize(activeSecondary) === normalized) {
-          activeSecondary = "";
-        }
-      });
-
-      if (secondaryBox) {
-        const hasAny = visibleSecondaryCount > 0;
-        secondaryBox.hidden = !hasAny;
-        secondaryBox.style.display = hasAny ? "" : "none";
-        secondaryBox.style.visibility = "";
-      }
-
-      setActiveSecondary(secondaryButtons, activeSecondary);
-    };
-
-    currentItems().forEach(assignItemMeta);
-
+    // ------------------------------------------------------------
+    // PRIMARY CATEGORY FILTER
+    // ------------------------------------------------------------
+    // ONLY /blog gets JS filtering.
+    // Everywhere else the category controls remain COMPLETELY untouched:
+    // no preventDefault, no href change, no active-state mutation.
     if (isBlogPage) {
       setActivePrimary(primaryButtons, activeCategory);
 
       primaryButtons.forEach((button) => {
-        const selectCategory = (event) => {
+        const selectPrimary = (event) => {
           event?.preventDefault?.();
 
-          activeCategory = buttonLabel(button) || CONFIG.allLabel;
+          activeCategory =
+            labelOf(button) || CONFIG.allLabel;
+
           visibleLimit = CONFIG.pageSize;
 
           setActivePrimary(primaryButtons, activeCategory);
-          syncViewAll();
           apply();
         };
 
-        button.addEventListener("click", selectCategory);
+        button.addEventListener("click", selectPrimary);
+
         button.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            selectCategory(event);
-          }
-        });
-      });
-    } else if (isCategoryPage) {
-      setActivePrimary(primaryButtons, activeCategory);
-
-      primaryButtons.forEach((button) => {
-        const goToCategory = (event) => {
-          event?.preventDefault?.();
-
-          const href = categoryUrl(button);
-
-          if (cleanPath(href) !== currentPath) {
-            window.location.assign(href);
-          }
-        };
-
-        button.addEventListener("click", goToCategory);
-        button.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            goToCategory(event);
+            selectPrimary(event);
           }
         });
       });
     }
+
+    // ------------------------------------------------------------
+    // SECONDARY CATEGORY FILTER
+    // ------------------------------------------------------------
+    // Works in place on /blog AND on every category/view-all page.
+    setActiveSecondary(secondaryButtons, activeSecondary);
 
     secondaryButtons.forEach((button) => {
       const selectSecondary = (event) => {
         event?.preventDefault?.();
 
-        if (
-          isCategoryPage &&
-          (button.closest(".w-dyn-item") || button).hidden
-        ) {
-          return;
-        }
-
-        const label = buttonLabel(button);
+        const label = labelOf(button);
 
         activeSecondary =
           normalize(activeSecondary) === normalize(label)
@@ -586,6 +419,7 @@
       };
 
       button.addEventListener("click", selectSecondary);
+
       button.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -594,6 +428,9 @@
       });
     });
 
+    // ------------------------------------------------------------
+    // SEARCH
+    // ------------------------------------------------------------
     if (searchInput) {
       searchInput.addEventListener("input", () => {
         query = normalize(searchInput.value);
@@ -615,9 +452,39 @@
       apply();
     });
 
-    apply();
-    syncViewAll();
+    // External "View all" CTA below the /blog list.
+    // This is NOT the static "View all" button inside the primary filter.
+    // It keeps the old behavior: selected category -> /categories/<slug>.
+    if (isBlogPage) {
+      const externalViewAllControls = [
+        ...document.querySelectorAll(CONFIG.externalViewAll)
+      ];
 
+      const syncExternalViewAll = () => {
+        const href =
+          normalize(activeCategory) === normalize(CONFIG.allLabel)
+            ? "/blog"
+            : `${CONFIG.categoryBasePath}${slugify(activeCategory)}`;
+
+        externalViewAllControls.forEach((control) => {
+          if (control.tagName === "A") {
+            control.setAttribute("href", href);
+          }
+        });
+      };
+
+      syncExternalViewAll();
+
+      primaryButtons.forEach((button) => {
+        button.addEventListener("click", syncExternalViewAll);
+      });
+    }
+
+    apply();
+
+    // ------------------------------------------------------------
+    // LOAD ALL NATIVE WEBFLOW CMS PAGINATION
+    // ------------------------------------------------------------
     const seenPages = new Set();
     const seenSlugs = new Set(
       currentItems().map(slugFromItem).filter(Boolean)
@@ -642,12 +509,15 @@
         }
 
         const html = await response.text();
+
         const doc = new DOMParser().parseFromString(
           html,
           "text/html"
         );
 
-        [...doc.querySelectorAll(CONFIG.item)].forEach((sourceItem) => {
+        [
+          ...doc.querySelectorAll(CONFIG.item)
+        ].forEach((sourceItem) => {
           const slug = slugFromItem(sourceItem);
 
           if (slug && seenSlugs.has(slug)) return;
@@ -668,17 +538,54 @@
           : "";
       }
     } catch (error) {
-      console.error("Detect dynamic blog filters:", error);
+      console.error(
+        "Detect dynamic blog filters:",
+        error
+      );
     } finally {
-      if (isCategoryPage) {
-        visibleLimit = Infinity;
+      // On category/view-all pages, hide every Secondary filter that does not
+      // exist in ANY article on that page (including all fetched CMS pages).
+      if (isSecondaryOnlyPage) {
+        const availableSecondary = new Set();
+
+        currentItems().forEach((item) => {
+          item._detectSecondaryCategories?.forEach((value) => {
+            availableSecondary.add(value);
+          });
+        });
+
+        let availableCount = 0;
+
+        secondaryButtons.forEach((button) => {
+          const normalized = normalize(labelOf(button));
+          const available = availableSecondary.has(normalized);
+
+          const wrapper =
+            button.closest(".w-dyn-item") || button;
+
+          wrapper.hidden = !available;
+          wrapper.style.display = available ? "" : "none";
+
+          if (available) {
+            availableCount += 1;
+          } else if (
+            normalize(activeSecondary) === normalized
+          ) {
+            activeSecondary = "";
+          }
+        });
+
+        if (secondaryBox) {
+          const hasAny = availableCount > 0;
+
+          secondaryBox.hidden = !hasAny;
+          secondaryBox.style.display = hasAny ? "" : "none";
+          secondaryBox.style.visibility = "";
+        }
       }
 
-      syncSecondaryAvailability();
-      apply();
-      syncViewAll();
-      setActivePrimary(primaryButtons, activeCategory);
       setActiveSecondary(secondaryButtons, activeSecondary);
+      apply();
     }
   };
 
