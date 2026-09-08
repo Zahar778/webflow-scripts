@@ -92,8 +92,9 @@
     const secondaryList = document.querySelector(CONFIG.secondaryList);
     const list = document.querySelector(CONFIG.list);
 
-    // This script only runs where the actual blog filter + blog list exist.
-    if (!categoryList || !secondaryList || !list) return;
+    // The secondary CMS filter is optional.
+    // The Blog page may contain only the primary .categories collection.
+    if (!categoryList || !list) return;
 
     // IMPORTANT:
     // There are multiple .blog-page-container elements on the page.
@@ -127,9 +128,9 @@
       ...dynamicPrimaryButtons
     ];
 
-    const secondaryButtons = [
-      ...secondaryList.querySelectorAll(".tab-btn")
-    ];
+    const secondaryButtons = secondaryList
+      ? [...secondaryList.querySelectorAll(".tab-btn")]
+      : [];
 
     const primaryLabels = dynamicPrimaryButtons
       .map(labelOf)
